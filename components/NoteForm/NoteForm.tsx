@@ -1,107 +1,151 @@
-import { Formik, Form, Field, ErrorMessage } from "formik";
-import * as Yup from "yup";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import toast from "react-hot-toast";
+"use client";
 
-import { createNote } from "@/lib/api";
-
-import type { NoteTag } from "../../types/note";
+import { useActionState, useEffect, useMemo, useState } from "react";
+import { useFormStatus } from "react-dom";
+import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 
 import css from "./NoteForm.module.css";
+import type { NoteTag } from "@/types/note";
+import { useNoteStore } from "@/lib/store/noteStore";
+import {
+  createNoteAction,
+  type CreateNoteActionState,
+} from "@/app/notes/action/create/actions";
 
 const TAGS: NoteTag[] = ["Todo", "Work", "Personal", "Meeting", "Shopping"];
+const initialState: CreateNoteActionState = { ok: false };
 
-interface FormValues {
-  title: string;
-  content: string;
-  tag: NoteTag;
+function SubmitButton({ disabled }: { disabled: boolean }) {
+  const { pending } = useFormStatus();
+
+  return (
+    <button
+      type="submit"
+      className={css.submitButton}
+      disabled={disabled || pending}
+    >
+      {pending ? "Creating..." : "Create note"}
+    </button>
+  );
 }
 
-interface NoteFormProps {
-  onCancel: () => void;
-}
-
-const validationSchema = Yup.object({
-  title: Yup.string()
-    .min(3, "Min 3 characters")
-    .max(50, "Max 50 characters")
-    .required("Title is required"),
-  content: Yup.string().max(500, "Max 500 characters"),
-  tag: Yup.mixed<NoteTag>()
-    .oneOf(TAGS, "Invalid tag")
-    .required("Tag is required"),
-});
-
-export default function NoteForm({ onCancel }: NoteFormProps) {
+export default function NoteForm() {
+  const router = useRouter();
   const queryClient = useQueryClient();
+  const { draft, setDraft, clearDraft } = useNoteStore();
 
-  const mutation = useMutation({
-    mutationFn: createNote,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["notes"] });
-      toast.success("Note created");
-      onCancel();
-    },
-    onError: () => {
-      toast.error("Failed to create note");
-    },
-  });
+  const [state, formAction] = useActionState(createNoteAction, initialState);
+  const [clientError, setClientError] = useState<string | null>(null);
 
-  const initialValues: FormValues = {
-    title: "",
-    content: "",
-    tag: "Todo",
+  const canSubmit = useMemo(() => {
+    const title = draft.title.trim();
+    if (title.length < 3 || title.length > 50) return false;
+    if (draft.content.trim().length > 500) return false;
+    if (!TAGS.includes(draft.tag)) return false;
+    return true;
+  }, [draft]);
+
+  useEffect(() => {
+    if (!state.ok) return;
+
+    (async () => {
+      clearDraft();
+      await queryClient.invalidateQueries({
+        queryKey: ["notes"],
+        exact: false,
+      });
+      router.replace("/notes/filter/all");
+      router.refresh();
+    })();
+  }, [state.ok, clearDraft, queryClient, router]);
+
+  const handleFieldChange = (
+    name: "title" | "content" | "tag",
+    value: string,
+  ) => {
+    if (name === "tag" && TAGS.includes(value as NoteTag)) {
+      setDraft({ tag: value as NoteTag });
+      return;
+    }
+    if (name === "title") setDraft({ title: value });
+    if (name === "content") setDraft({ content: value });
   };
 
   return (
-    <Formik<FormValues>
-      initialValues={initialValues}
-      validationSchema={validationSchema}
-      onSubmit={(values) => mutation.mutate(values)}
+    <form
+      className={css.form}
+      action={async (fd) => {
+        setClientError(null);
+
+        if (!canSubmit) {
+          setClientError("Please fix the form fields before submitting.");
+          return;
+        }
+
+        await formAction(fd);
+      }}
     >
-      <Form className={css.form}>
-        <label className={css.label}>
-          Title
-          <Field name="title" type="text" className={css.input} />
-          <ErrorMessage name="title" component="span" className={css.error} />
-        </label>
+      <div className={css.formGroup}>
+        <label htmlFor="title">Title</label>
+        <input
+          id="title"
+          name="title"
+          className={css.input}
+          type="text"
+          value={draft.title}
+          onChange={(e) => handleFieldChange("title", e.target.value)}
+          required
+          minLength={3}
+          maxLength={50}
+        />
+      </div>
 
-        <label className={css.label}>
-          Content
-          <Field
-            name="content"
-            as="textarea"
-            rows={5}
-            className={css.textarea}
-          />
-          <ErrorMessage name="content" component="span" className={css.error} />
-        </label>
+      <div className={css.formGroup}>
+        <label htmlFor="content">Content</label>
+        <textarea
+          id="content"
+          name="content"
+          className={css.textarea}
+          rows={8}
+          value={draft.content}
+          onChange={(e) => handleFieldChange("content", e.target.value)}
+          maxLength={500}
+        />
+      </div>
 
-        <label className={css.label}>
-          Tag
-          <Field name="tag" as="select" className={css.select}>
-            {TAGS.map((tag) => (
-              <option key={tag} value={tag}>
-                {tag}
-              </option>
-            ))}
-          </Field>
-          <ErrorMessage name="tag" component="span" className={css.error} />
-        </label>
+      <div className={css.formGroup}>
+        <label htmlFor="tag">Tag</label>
+        <select
+          id="tag"
+          name="tag"
+          className={css.select}
+          value={draft.tag}
+          onChange={(e) => handleFieldChange("tag", e.target.value)}
+        >
+          {TAGS.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </div>
 
-        <div className={css.actions}>
-          <button type="button" className={css.cancel} onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            type="submit"
-            className={css.submit}
-            disabled={mutation.isPending}
-          >
-            Add note
-          </button>
-        </div>
-      </Form>
-    </Formik>
+      <div className={css.actions}>
+        <button
+          type="button"
+          className={css.cancelButton}
+          onClick={() => router.back()}
+        >
+          Cancel
+        </button>
+
+        <SubmitButton disabled={!canSubmit} />
+      </div>
+
+      {(clientError || (!state.ok && state.message)) && (
+        <p className={css.error}>{clientError ?? state.message}</p>
+      )}
+    </form>
   );
 }
